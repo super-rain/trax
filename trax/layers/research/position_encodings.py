@@ -139,7 +139,7 @@ class InfinitePositionalEncoding(layer_base.Layer):
       self, drift=.03, affine=True, transform='any',
       time_bin_length=None,
       mode='train'):
-    """Initialize the encoding.
+    """Initializes the encoding.
 
     The encoding tries to roughly evenly traverse the latent space.
     The recurrence time is dependent on how many bits per dimension you use.
@@ -235,7 +235,7 @@ class InfinitePositionalEncoding(layer_base.Layer):
     # Convert from cycles to radians:
     embeddings = np.cos(np.pi * 2 * cycles)
 
-    # Set the last channel to the time bin feature:
+    # Set the last channels to the time bin features:
     if self._time_bin_length is not None:
       inter_bin_idx, intra_bin_idx = divmod(t[:, -1:], self._time_bin_length)
       bin_parity = inter_bin_idx % 2
@@ -293,3 +293,66 @@ class InfinitePositionalEncoding(layer_base.Layer):
     else:
       state = layer_base.EMPTY_STATE
     return weights, state
+
+
+class TimeBinPositionalEncoding(layer_base.Layer):
+  """Just the engineered features from InfinitePositionalEncoding."""
+  num_features = 3
+
+  def __init__(self, time_bin_length, mode='train'):
+    """Initializes the encoding.
+
+    Args:
+      time_bin_length: TimeBinCausalAttention.bin_length of the first layer.
+      mode: if 'predict', allow evaluating one token at a time
+    """
+    super().__init__()
+    self._time_bin_length = time_bin_length
+    self._mode = mode
+
+  def _get_embeddings(self, t):
+    """Get embeddings float[..., num_features].
+
+    Args:
+      t: int[...] position (i.e. np.arange(..., np.int32))
+
+    Returns:
+      embeddings: float[..., num_features]
+    """
+    inter_bin_idx, intra_bin_idx = divmod(t, self._time_bin_length)
+    bin_parity = inter_bin_idx % 2
+    bin_fraction = intra_bin_idx / self._time_bin_length
+    embeddings = np.stack([
+        1 / (1 + inter_bin_idx),
+        bin_fraction,
+        bin_parity.astype(np.float32),
+    ], -1)
+
+    assert embeddings.shape == t.shape + (self.num_features,), embeddings.shape
+    return embeddings
+
+  def forward_with_state(self, inputs, weights=layer_base.EMPTY_WEIGHTS,
+                         state=layer_base.EMPTY_STATE, rng=None, **kwargs):
+
+    if self._mode == 'predict':
+      emb = self._get_embeddings(t=state)
+      emb = emb[:, np.newaxis, :]
+      state = state + 1
+    else:
+      input_len = inputs.shape[-2]
+      emb = self._get_embeddings(t=np.arange(input_len, dtype=np.int32))
+      # Leave batch axis as 1 for broadcasting:
+      emb = emb[np.newaxis, :, :]
+      emb = np.broadcast_to(emb, inputs.shape[:-1] + (3,))
+
+    # Replace the last num_features channels of input.
+    inputs = np.concatenate([inputs[..., :-self.num_features], emb], -1)
+
+    return inputs, state
+
+  def new_weights_and_state(self, input_signature):
+    if self._mode == 'predict':
+      batch_size = input_signature.shape[0]
+      return layer_base.EMPTY_WEIGHTS, np.zeros((batch_size,), dtype=np.int32)
+    else:
+      return layer_base.EMPTY_WEIGHTS, layer_base.EMPTY_STATE
