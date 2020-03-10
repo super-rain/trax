@@ -16,6 +16,7 @@
 # Lint as: python3
 """Classes for RL training in Trax."""
 
+import functools
 import time
 import numpy as np
 
@@ -123,6 +124,7 @@ class ExamplePolicyTrainer(RLTrainer):
     self._eval_model = model(mode='eval')
     example_batch = next(self._batches_stream())
     self._eval_model.init(example_batch)
+    self._policy_dist = tl.create_distribution(task.env.action_space)
 
     # Inputs to the policy model are produced by self._batches_stream.
     # As you can see below, the stream returns (observation, action, return)
@@ -135,19 +137,21 @@ class ExamplePolicyTrainer(RLTrainer):
     #
     # * this is a policy trainer, so:
     #     inputs are states and targets are actions + loss weights (see below)
-    # * we are using CrossEntropyLoss
+    # * we are using LogLoss
     #     This is because we are training a policy model, so targets are
-    #     actions and they are integers -- CrossEntropyLoss will calculate
-    #     the probability of each action in the state, pi(s, a).
+    #     actions and they are points sampled from the policy distribution --
+    #     LogLoss will calculate
+    #     the log probability of each action in the state, log pi(s, a).
     # * we are using has_weights=True
     #     We set has_weights = True because pi(s, a) will be multiplied by
     #     a number -- a factor that can change depending on which policy
     #     gradient algorithms you use; here, we just use the return from
     #     from this state and action, but many other variants can be tried.
+    loss = functools.partial(tl.LogLoss, distribution=self._policy_dist)
     self._trainer = supervised.Trainer(
         model=model, optimizer=optimizer, lr_schedule=lr_schedule,
-        loss_fn=tl.CrossEntropySum, inputs=self._inputs, output_dir=output_dir,
-        metrics={'loss': tl.CrossEntropySum}, has_weights=True)
+        loss_fn=loss, inputs=self._inputs, output_dir=output_dir,
+        metrics={'loss': loss}, has_weights=True)
 
   def _batches_stream(self):
     """Use the RLTask self._task to create inputs to the policy model."""
@@ -170,9 +174,11 @@ class ExamplePolicyTrainer(RLTrainer):
   def policy(self, trajectory):
     model = self._eval_model
     model.weights = self._trainer.model_weights
-    pred = model(trajectory.last_observation[None, ...], n_accelerators=1)
-    sample = tl.gumbel_sample(pred[0, :])
-    return sample, pred[0, sample]
+    dist_params = model(
+        trajectory.last_observation[None, ...], n_accelerators=1
+    )[0]
+    sample = self._policy_dist.sample(dist_params)
+    return (sample, self._policy_dist.log_prob(dist_params, sample))
 
   def train_epoch(self):
     """Trains RL for one epoch."""

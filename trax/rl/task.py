@@ -222,6 +222,10 @@ class RLTask:
     self._trajectories[0] = initial_trajectories
 
   @property
+  def env(self):
+    return self._env
+
+  @property
   def max_steps(self):
     return self._max_steps
 

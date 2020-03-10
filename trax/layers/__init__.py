@@ -25,6 +25,7 @@ from trax.layers.base import *
 from trax.layers.combinators import *
 from trax.layers.convolution import *
 from trax.layers.core import *
+from trax.layers.distributions import *
 from trax.layers.initializers import *
 from trax.layers.metrics import *
 from trax.layers.normalization import *
